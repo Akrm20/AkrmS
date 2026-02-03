@@ -133,26 +133,39 @@
 <script src="Ju.js"></script>
 <script src="Fin.js"></script>
 <script src="Re.js"></script>
+
 <script>
+    // دالة التبديل بين التبويبات
     function showTab(tabId, btn) {
+        // إزالة التفعيل من الكل
         document.querySelectorAll('.tab-content').forEach(div => div.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.getElementById(tabId).classList.add('active');
-        btn.classList.add('active');
+        
+        // تفعيل المطلوب
+        const targetDiv = document.getElementById(tabId);
+        if (targetDiv) targetDiv.classList.add('active');
+        
+        if (btn) btn.classList.add('active');
+        else {
+            // محاولة تفعيل الزر برمجياً إذا لم يتم تمريره
+            const autoBtn = document.querySelector(`button[onclick*="'${tabId}'"]`);
+            if (autoBtn) autoBtn.classList.add('active');
+        }
 
-        // التوجيه المنطقي لكل تبويب
-        if (tabId === 'tab1') initHomeDashboard(); // تشغيل لوحة التحكم
-        if (tabId === 'tab4') initFinancialReports();
-        if (tabId === 'tab5') renderSettingsTab();
+        // التوجيه المنطقي
+        if (tabId === 'tab1') {
+            if(typeof initHomeDashboard === 'function') initHomeDashboard();
+        }
+        if (tabId === 'tab4') {
+            if(typeof initFinancialReports === 'function') initFinancialReports();
+        }
+        if (tabId === 'tab5') {
+            if(typeof renderSettingsTab === 'function') renderSettingsTab();
+        }
     }
-    
-    // تشغيل التبويب الأول تلقائياً عند فتح التطبيق
-    document.addEventListener('DOMContentLoaded', () => {
-         // ننتظر قليلاً للتأكد من اتصال القاعدة (Db.js يرسل startSystem)
-         // لكن كإجراء احتياطي أو عند التحديث:
-         const btn1 = document.querySelector('.tab-btn');
-         if(btn1) showTab('tab1', btn1);
-    });
+
+    // --- ملاحظة: قمنا بحذف كود DOMContentLoaded من هنا ---
+    // وسننقل أمر التشغيل إلى داخل ملف Db.js لضمان أن القاعدة جاهزة
 </script>
 
 </body>
