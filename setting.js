@@ -1,4 +1,4 @@
-// === Setting.js: الإعدادات + استيراد وتصدير إكسيل ===
+// === Setting.js: الإعدادات + التصدير (Excel + Full Backup) ===
 
 const AppConfig = {
     currency: "ريال سعودي",
@@ -11,11 +11,11 @@ const AppConfig = {
         prevEnd: (new Date().getFullYear() - 1) + "-12-31"
     },
     policies: [
-        "معايير SOCPA", "الجرد المستمر", "أساس الاستحقاق"
+        "معايير SOCPA", "الجرد المستمر", "أساس الاستحقاق", "عملة العرض: الريال"
     ]
 };
 
-// --- دوال مساعدة للتنسيق ---
+// --- دوال مساعدة للتنسيق (تستخدمها كل الملفات) ---
 function formatMoney(amount) {
     if (!amount && amount !== 0) return "0.00";
     return Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -37,11 +37,13 @@ function renderSettingsTab() {
             <ul class="policy-list">
                 <li>العملة: ${AppConfig.currency}</li>
                 <li>نهاية السنة المالية: ${AppConfig.fiscalYear.end}</li>
+                ${AppConfig.policies.map(p => `<li>✅ ${p}</li>`).join('')}
             </ul>
         </div>
 
         <div class="settings-card">
             <h4>📂 التصدير والاستيراد (Excel)</h4>
+            <p class="hint-text">للمراجعة والعمل المكتبي</p>
             
             <div class="excel-control-group">
                 <label>1. دليل الحسابات:</label>
@@ -61,7 +63,16 @@ function renderSettingsTab() {
                     <button onclick="document.getElementById('file-import-ju').click()" class="excel-btn import">استيراد القيود ⬆️</button>
                     <input type="file" id="file-import-ju" accept=".xlsx, .xls" style="display:none" onchange="importJournalsFromExcel(this)">
                 </div>
-                <p class="hint-text">* عند الاستيراد، يتم تجميع الأسطر بناءً على رقم القيد.</p>
+            </div>
+        </div>
+
+        <div class="settings-card" style="border: 1px solid #3498db;">
+            <h4 style="color:#2980b9">💾 النسخ الاحتياطي الكامل (System Image)</h4>
+            <p class="hint-text">يحفظ ملفاً واحداً (JSON) يحتوي على كل شيء (حسابات، قيود، تقارير). استخدمه لنقل النظام لجهاز آخر أو للحماية من فقدان البيانات.</p>
+            <div class="btn-row">
+                <button onclick="backupFullSystem()" class="excel-btn" style="background:#2c3e50">حفظ نسخة كاملة ⬇️</button>
+                <button onclick="document.getElementById('file-restore-json').click()" class="excel-btn" style="background:#8e44ad">استعادة نسخة كاملة ⬆️</button>
+                <input type="file" id="file-restore-json" accept=".json" style="display:none" onchange="restoreFullSystem(this)">
             </div>
         </div>
 
@@ -75,27 +86,100 @@ function renderSettingsTab() {
 }
 
 // ==========================================
-// منطق التصدير والاستيراد (Excel Logic)
+// 1. النسخ الاحتياطي الكامل (JSON Backup)
 // ==========================================
 
-// --- 1. الحسابات (Accounts) ---
+function backupFullSystem() {
+    const backup = {
+        timestamp: new Date().toISOString(),
+        version: "1.0",
+        accounts: [],
+        journals: [],
+        reportData: []
+    };
+
+    dbGetAllAccounts(function(accs) {
+        backup.accounts = accs;
+        dbGetAllJournals(function(jus) {
+            backup.journals = jus;
+            dbGetReportData(function(reps) {
+                // تحويل كائن التقارير لمصفوفة للحفظ
+                for (let key in reps) {
+                    backup.reportData.push({ id: key, value: reps[key] });
+                }
+
+                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backup));
+                const downloadAnchorNode = document.createElement('a');
+                downloadAnchorNode.setAttribute("href", dataStr);
+                downloadAnchorNode.setAttribute("download", "Accounting_Full_" + new Date().toISOString().slice(0,10) + ".json");
+                document.body.appendChild(downloadAnchorNode);
+                downloadAnchorNode.click();
+                downloadAnchorNode.remove();
+            });
+        });
+    });
+}
+
+function restoreFullSystem(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    if (!confirm("تحذير هام:\nاستعادة النسخة ستمسح كل البيانات الحالية وتستبدلها بالنسخة.\nهل أنت متأكد تماماً؟")) {
+        input.value = "";
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const backup = JSON.parse(e.target.result);
+            if (!backup.accounts || !backup.journals) throw new Error("ملف غير صالح");
+
+            const req = indexedDB.open('MyAccountingDB', 4); // نفس رقم الإصدار
+            req.onsuccess = function(ev) {
+                const db = ev.target.result;
+                const tx = db.transaction(['accounts', 'journals', 'report_data'], 'readwrite');
+                
+                // مسح كل شيء
+                tx.objectStore('accounts').clear();
+                tx.objectStore('journals').clear();
+                tx.objectStore('report_data').clear();
+
+                // استعادة البيانات
+                backup.accounts.forEach(a => tx.objectStore('accounts').add(a));
+                backup.journals.forEach(j => tx.objectStore('journals').add(j));
+                if (backup.reportData) {
+                    backup.reportData.forEach(r => tx.objectStore('report_data').put(r));
+                }
+
+                tx.oncomplete = function() {
+                    alert("✅ تمت استعادة النظام بنجاح!");
+                    location.reload();
+                };
+            };
+        } catch (err) {
+            alert("فشل قراءة الملف: " + err.message);
+        }
+    };
+    reader.readAsText(file);
+    input.value = "";
+}
+
+// ==========================================
+// 2. التصدير والاستيراد (Excel SheetJS)
+// ==========================================
 
 function exportAccountsToExcel() {
     dbGetAllAccounts(function(accounts) {
-        // تجهيز البيانات بشكل مبسط للإكسيل
         const data = accounts.map(acc => ({
-            "رقم المعرف (ID)": acc.id,
-            "كود الحساب": acc.code,
-            "اسم الحساب": acc.name,
-            "رقم الأب (ParentID)": acc.parentId
+            "Code": acc.code,
+            "Name": acc.name,
+            "ParentID": acc.parentId,
+            "ID": acc.id
         }));
-
-        // إنشاء ملف الإكسيل
         const ws = XLSX.utils.json_to_sheet(data);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "دليل الحسابات");
-        
-        // الحفظ
+        XLSX.utils.book_append_sheet(wb, ws, "Accounts");
         XLSX.writeFile(wb, "Accounts_Backup.xlsx");
     });
 }
@@ -103,70 +187,47 @@ function exportAccountsToExcel() {
 function importAccountsFromExcel(input) {
     const file = input.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = function(e) {
         const data = new Uint8Array(e.target.result);
         const workbook = XLSX.read(data, { type: 'array' });
+        const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
         
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        
-        // تحويل الإكسيل إلى JSON
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
-
-        if (confirm(`تم قراءة ${jsonData.length} حساب. هل تريد إضافتهم لقاعدة البيانات؟`)) {
-            let count = 0;
+        if (confirm(`تم قراءة ${jsonData.length} حساب. استيراد؟`)) {
             jsonData.forEach(row => {
-                // التأكد من أسماء الأعمدة (سواء عربي أو انجليزي حسب التصدير)
-                // هنا نفترض أن المستخدم يستخدم نفس القالب المصدر
-                const code = row["كود الحساب"] || row["code"];
-                const name = row["اسم الحساب"] || row["name"];
-                const parentId = row["رقم الأب (ParentID)"] || row["parentId"] || 0;
-
+                const code = row["Code"] || row["code"] || row["كود الحساب"];
+                const name = row["Name"] || row["name"] || row["اسم الحساب"];
+                const pid = row["ParentID"] || row["parentId"] || 0;
                 if (code && name) {
-                    // إضافة للقاعدة
-                    dbAddAccount({ code: String(code), name: String(name), parentId: parseInt(parentId) }, 
-                        () => {}, // Success (silent)
-                        () => console.log("تكرار أو خطأ في", code)
-                    );
-                    count++;
+                    dbAddAccount({ code: String(code), name: String(name), parentId: parseInt(pid) }, ()=>{}, ()=>{});
                 }
             });
-            alert("تمت العملية. يرجى تحديث الصفحة لرؤية التغييرات.");
+            alert("تم الاستيراد. حدث الصفحة.");
             setTimeout(() => location.reload(), 1000);
         }
     };
     reader.readAsArrayBuffer(file);
-    // تفريغ الحقل
     input.value = ""; 
 }
 
-// --- 2. القيود (Journals) ---
-
 function exportJournalsToExcel() {
     dbGetAllJournals(function(journals) {
-        // القيود مخزنة بشكل هرمي (قيد وبداخله تفاصيل)
-        // للإكسيل، يجب "تسطيح" البيانات (Flattening)
         const flatData = [];
-
         journals.forEach(j => {
             j.details.forEach(det => {
                 flatData.push({
-                    "رقم القيد": j.id, // مهم جداً للتجميع عند الاستيراد
-                    "التاريخ": j.date,
-                    "البيان": j.description,
-                    "كود الحساب": det.accountCode || det.accountId, // نفضل الكود
-                    "مدين": det.debit,
-                    "دائن": det.credit
+                    "JournalID": j.id,
+                    "Date": j.date,
+                    "Description": j.description,
+                    "AccountCode": det.accountCode,
+                    "Debit": det.debit,
+                    "Credit": det.credit
                 });
             });
         });
-
         const ws = XLSX.utils.json_to_sheet(flatData);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "القيود اليومية");
-        
+        XLSX.utils.book_append_sheet(wb, ws, "Journals");
         XLSX.writeFile(wb, "Journals_Backup.xlsx");
     });
 }
@@ -174,129 +235,78 @@ function exportJournalsToExcel() {
 function importJournalsFromExcel(input) {
     const file = input.files[0];
     if (!file) return;
-
     const reader = new FileReader();
     reader.onload = function(e) {
         const data = new Uint8Array(e.target.result);
         const workbook = XLSX.read(data, { type: 'array' });
-        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
-
-        // التحدي: الإكسيل صفوف متفرقة، ونحن نريد تجميعها كقيود
-        // الحل: التجميع بواسطة "رقم القيد"
-        const groupedJournals = {};
-
+        const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+        
+        // تجميع حسب ID القيد
+        const grouped = {};
         jsonData.forEach(row => {
-            const jId = row["رقم القيد"] || "Temp_" + Math.random(); // لو مفيش رقم نعتبره قيد جديد مؤقت
-            const date = row["التاريخ"];
-            const desc = row["البيان"];
-            const accCode = row["كود الحساب"];
-            const debit = parseFloat(row["مدين"]) || 0;
-            const credit = parseFloat(row["دائن"]) || 0;
-
-            if (!groupedJournals[jId]) {
-                groupedJournals[jId] = {
-                    date: date,
-                    description: desc,
+            const jId = row["JournalID"];
+            if (!grouped[jId]) {
+                grouped[jId] = {
+                    date: row["Date"],
+                    description: row["Description"],
+                    totalAmount: 0,
                     details: []
                 };
             }
+            const deb = parseFloat(row["Debit"]) || 0;
+            const cred = parseFloat(row["Credit"]) || 0;
             
-            // نحتاج معرفة ID الحساب بناء على الكود
-            // هذه خطوة متقدمة، للتبسيط سنحاول البحث عن الحساب لاحقاً أو حفظ الكود فقط
-            // سنحفظ الكود والعملية تتم لاحقاً عند العرض، أو يجب أن نبحث في القاعدة الآن
-            // للسرعة: سنخزن الكود، ويجب على النظام أن يكون ذكياً في التعامل معه
-            // ملاحظة: dbAddJournal تتوقع accountId. 
-            // *تحسين*: سنقوم بجلب كل الحسابات أولاً لمطابقة الأكواد
-        });
-
-        // لجعل الاستيراد دقيقاً، نجلب الحسابات ونطابق الأكواد
-        dbGetAllAccounts(function(allAccounts) {
-            const codeMap = {};
-            allAccounts.forEach(a => codeMap[a.code] = a.id);
-
-            let importCount = 0;
-            const journalKeys = Object.keys(groupedJournals);
-
-            // مصفوفة لتنفيذ العمليات التسلسلية
-            const processJournal = (index) => {
-                if (index >= journalKeys.length) {
-                    alert(`تم استيراد ${importCount} قيد بنجاح.`);
-                    location.reload();
-                    return;
-                }
-
-                const key = journalKeys[index];
-                const jData = groupedJournals[key];
-                
-                // تحويل تفاصيل القيد واستبدال الكود بالـ ID
-                let totalDeb = 0;
-                const processedDetails = jData.details = [];
-                
-                // نحن بحاجة لإعادة التكرار على الصفوف الأصلية للتأكد من التفاصيل
-                // الطريقة الأفضل: التجميع كان يجب أن يشمل التفاصيل
-                // دعنا نعيد التجميع بشكل أصح:
-            };
+            // نحتاج البحث عن ID الحساب بناء على الكود
+            // هذه الخطوة تتطلب جلب الحسابات. هنا سنقوم بإضافة سريعة:
+            // في الواقع العملي، نحتاج لمطابقة الكود. هنا سنعتمد على أن الكود صحيح
+            // لكن dbAddJournal تحتاج accountId، لذا سنحاول البحث عنه لاحقاً
+            // (للتبسيط: سنفترض أن المستخدم يصدر ويستورد نفس البيانات)
             
-            // --- إعادة التجميع مع المطابقة ---
-            const finalJournals = [];
-            const tempMap = {}; // Map<JournalID, JournalObject>
-
-            jsonData.forEach(row => {
-                const jId = row["رقم القيد"];
-                const accCode = String(row["كود الحساب"]);
-                const accId = codeMap[accCode]; // البحث عن الآيدي
-
-                if (!accId) {
-                    console.warn(`تجاهل سطر: كود الحساب غير موجود ${accCode}`);
-                    return;
-                }
-
-                if (!tempMap[jId]) {
-                    tempMap[jId] = {
-                        date: row["التاريخ"],
-                        description: row["البيان"],
-                        totalAmount: 0,
-                        details: []
-                    };
-                    finalJournals.push(tempMap[jId]);
-                }
-
-                const debit = parseFloat(row["مدين"]) || 0;
-                const credit = parseFloat(row["دائن"]) || 0;
-
-                tempMap[jId].details.push({
-                    accountId: String(accId),
-                    accountCode: accCode,
-                    debit: debit,
-                    credit: credit
-                });
-
-                tempMap[jId].totalAmount += debit;
+            grouped[jId].details.push({
+                accountCode: row["AccountCode"], 
+                // accountId: ??? (نحتاج بحث) -> سيتم معالجته عند الحفظ أو نتركه فارغاً
+                // ملاحظة: النظام يعتمد على accountId. 
+                // الحل الأفضل: عدم الاعتماد على استيراد الإكسيل للقيود إلا للضرورة القصوى
+                debit: deb,
+                credit: cred
             });
-
-            // الحفظ في القاعدة
-            if (finalJournals.length > 0 && confirm(`تم تجهيز ${finalJournals.length} قيد. هل تريد الاستيراد؟`)) {
-                finalJournals.forEach(j => {
-                    dbAddJournal(j, () => {}, () => {});
-                });
-                alert("تم بدء الاستيراد في الخلفية.");
-                setTimeout(() => location.reload(), 1500);
-            } else {
-                alert("لم يتم العثور على بيانات صالحة أو تم إلغاء العملية.");
-            }
+            grouped[jId].totalAmount += deb;
+        });
+        
+        // بما أن استيراد القيود معقد (يحتاج مطابقة ID الحسابات)، سننبه المستخدم فقط
+        // إذا كنت تريد تفعيله بالكامل، يجب جلب كل الحسابات ومطابقة الأكواد
+        
+        dbGetAllAccounts(function(accounts) {
+             const codeMap = {};
+             accounts.forEach(a => codeMap[a.code] = a.id);
+             
+             let count = 0;
+             for (let id in grouped) {
+                 const j = grouped[id];
+                 // تصحيح accountId
+                 j.details.forEach(d => {
+                     if (codeMap[d.accountCode]) d.accountId = codeMap[d.accountCode];
+                 });
+                 
+                 // إضافة فقط إذا كانت الحسابات معروفة
+                 if (j.details.every(d => d.accountId)) {
+                     dbAddJournal(j, ()=>{}, ()=>{});
+                     count++;
+                 }
+             }
+             alert(`تم استيراد ${count} قيد بنجاح.`);
+             location.reload();
         });
     };
     reader.readAsArrayBuffer(file);
     input.value = "";
 }
 
-// --- وظائف إضافية ---
 function resetDatabase() {
-    if (confirm("تحذير: هذا سيحذف كل البيانات نهائياً! هل أنت متأكد؟")) {
+    if (confirm("تحذير: هذا سيحذف كل البيانات نهائياً!")) {
         const req = indexedDB.deleteDatabase('MyAccountingDB');
         req.onsuccess = () => {
-            alert("تم الحذف. سيتم إعادة تحميل الصفحة لإنشاء قاعدة جديدة فارغة.");
+            alert("تم الحذف. إعادة تحميل...");
             location.reload();
         };
     }
@@ -310,16 +320,13 @@ function injectSettingStyles() {
         .settings-card { background: white; padding: 15px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
         .policy-list { padding-right: 20px; color: #555; font-size: 10px; }
         .policy-list li { margin-bottom: 5px; }
-        
-        /* أزرار الإكسيل */
         .excel-control-group { margin-bottom: 10px; }
         .excel-control-group label { display: block; font-weight: bold; margin-bottom: 5px; color: #2c3e50; font-size: 11px; }
         .btn-row { display: flex; gap: 10px; }
         .excel-btn { flex: 1; padding: 10px; border: none; border-radius: 5px; cursor: pointer; font-size: 10px; color: white; display: flex; align-items: center; justify-content: center; gap: 5px; }
-        .excel-btn.export { background-color: #27ae60; } /* أخضر */
-        .excel-btn.import { background-color: #2980b9; } /* أزرق */
-        
-        .hint-text { font-size: 9px; color: #7f8c8d; margin-top: 5px; }
+        .excel-btn.export { background-color: #27ae60; } 
+        .excel-btn.import { background-color: #2980b9; }
+        .hint-text { font-size: 9px; color: #7f8c8d; margin-top: 5px; margin-bottom: 10px; }
         .danger-btn { width: 100%; background: #c0392b; color: white; border: none; padding: 10px; border-radius: 4px; margin-top: 10px; cursor: pointer; }
     `;
     document.head.appendChild(s);
