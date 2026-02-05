@@ -1,504 +1,442 @@
-// === Fin.js: القوائم المالية المتقدمة (طباعة + تحليل + تدفقات) ===
+// === Fin.js: القوائم المالية الذكية (مقارنة آلية + نسب التغير) ===
 
 function initFinancialReports() {
     renderReportStyles();
     const tab4 = document.getElementById('tab4');
+    
+    // واجهة التحكم
     tab4.innerHTML = `
-        <div class="no-print">
-            <h3>التقارير المالية</h3>
-            <div class="report-controls">
-                <button onclick="generateIncomeStatement()" class="rep-btn">قائمة الدخل</button>
-                <button onclick="generateBalanceSheet()" class="rep-btn">المركز المالي</button>
-                <button onclick="generateEquityStatement()" class="rep-btn">حقوق الملكية</button>
-                <button onclick="generateCashFlow()" class="rep-btn">التدفقات النقدية</button>
+        <div class="no-print report-dashboard">
+            <div class="dash-header">
+                <h3>📊 التقارير المالية والختامية</h3>
+                <span class="fiscal-badge">السنة المالية: ${AppConfig.fiscalYear.end.split('-')[0]}</span>
             </div>
-            <div class="print-control">
-                <button onclick="window.print()" class="action-btn print-btn">🖨️ طباعة التقرير الحالي</button>
+            <div class="report-controls">
+                <button onclick="generateIncomeStatement()" class="rep-btn">📄 قائمة الدخل</button>
+                <button onclick="generateBalanceSheet()" class="rep-btn">⚖️ المركز المالي</button>
+                <button onclick="window.print()" class="action-btn print-btn">🖨️ طباعة رسمي</button>
+            </div>
+            <div class="alert-box">
+                <small>💡 النظام يقوم تلقائياً بمقارنة أرصدة 2026 مع القيود المدخلة بتاريخ سابق (2025).</small>
             </div>
         </div>
 
-        <div id="report-display-area" class="report-paper">
-            <p class="loading-text">اختر تقريراً للعرض...</p>
+        <div id="report-paper" class="a4-page">
+            <div class="watermark">مسودة</div>
+            <div style="text-align:center; padding-top:100px; color:#999;">
+                اختر التقرير لعرضه
+            </div>
         </div>
-        
-        <div id="save-indicator" style="display:none; position:fixed; bottom:10px; left:10px; background:#2ecc71; color:white; padding:5px 10px; border-radius:4px; font-size:10px;">تم الحفظ</div>
     `;
 }
 
-// --- المحرك الحسابي (Calculation Engine) ---
-function calculateBalances(callback) {
+// ============================================================
+// 1. المحرك المنطقي (The Core Engine)
+// ============================================================
+function calculateFinancialData(callback) {
     dbGetAllAccounts(function(accounts) {
         dbGetAllJournals(function(journals) {
-            dbGetReportData(function(savedReportData) {
+            
+            const startOfCurrentYear = new Date(AppConfig.fiscalYear.start); // 2026-01-01
+            
+            // مخازن الأرصدة
+            const currentStore = {}; // 2026
+            const prevStore = {};    // 2025 (و ما قبل)
+
+            // دالة مساعدة
+            const add = (store, id, val) => {
+                if (!store[id]) store[id] = 0;
+                store[id] += val;
+            };
+
+            journals.forEach(j => {
+                const jDate = new Date(j.date);
                 
-                const balances = {};
-                accounts.forEach(acc => balances[acc.id] = 0);
-
-                journals.forEach(j => {
-                    j.details.forEach(det => {
-                        const val = det.debit - det.credit;
-                        if (balances[det.accountId] !== undefined) {
-                            balances[det.accountId] += val;
+                j.details.forEach(d => {
+                    const val = Number(d.debit) - Number(d.credit);
+                    
+                    if (jDate >= startOfCurrentYear) {
+                        // عمليات السنة الحالية تضاف للسنة الحالية فقط
+                        add(currentStore, d.accountId, val);
+                    } else {
+                        // عمليات السنة السابقة تضاف للسنة السابقة
+                        add(prevStore, d.accountId, val);
+                        
+                        // --- المنطق المحاسبي لتدوير الأرصدة ---
+                        // هل هذا الحساب يرحل للسنة القادمة؟
+                        // حسابات الميزانية (1, 2, 3) -> ترحل أرصدتها
+                        // حسابات الدخل (4, 5) -> لا ترحل (تصفر)
+                        const acc = accounts.find(a => a.id == d.accountId);
+                        if (acc) {
+                            const c = String(acc.code);
+                            if (c.startsWith('1') || c.startsWith('2') || c.startsWith('3')) {
+                                add(currentStore, d.accountId, val); // الرصيد السابق يضاف للحالي
+                            }
                         }
-                    });
+                    }
                 });
-
-                const getTotal = (accId) => {
-                    let total = balances[accId] || 0;
-                    const children = accounts.filter(a => a.parentId === accId);
-                    children.forEach(child => {
-                        total += getTotal(child.id);
-                    });
-                    return total;
-                };
-
-                // دالة مساعدة لجلب الرصيد بالكود (للتدفقات النقدية)
-                const getTotalByCode = (codePrefix) => {
-                    let total = 0;
-                    accounts.forEach(acc => {
-                        if (acc.code.toString().startsWith(codePrefix)) {
-                            // جمع الفروع فقط
-                            const isParent = accounts.some(child => child.parentId === acc.id);
-                            if (!isParent) total += balances[acc.id];
-                        }
-                    });
-                    return total;
-                };
-
-                callback(accounts, balances, getTotal, getTotalByCode, savedReportData);
             });
+
+            // دالة جلب المجموع حسب الكود والسنة
+            const getSum = (codePrefix, year = 'current') => {
+                const store = year === 'current' ? currentStore : prevStore;
+                let total = 0;
+                accounts.forEach(acc => {
+                    if (String(acc.code).startsWith(String(codePrefix))) {
+                        const accId = acc.id;
+                        if (store[accId]) total += store[accId];
+                    }
+                });
+                return total;
+            };
+
+            // حساب الأرباح المبقاة (Retained Earnings) المعقد
+            // هي: رصيد حساب 33 + (أرباح السنوات السابقة المرحلة)
+            const getRetainedEarnings = (year = 'current') => {
+                // 1. الرصيد المباشر في الحساب 33
+                let re = getSum('33', year);
+                
+                // 2. إذا كنا في السنة الحالية، نضيف لها صافي ربح السنة الماضية
+                if (year === 'current') {
+                    // صافي ربح الماضي = إيرادات الماضي (دائن) - مصاريف الماضي (مدين)
+                    // في النظام: الإيراد سالب، المصروف موجب. الجمع الجبري يعطي الصافي (سالب=ربح)
+                    const prevNet = getSum('4', 'prev') + getSum('5', 'prev');
+                    re += prevNet;
+                }
+                return re; // النتيجة سالبة إذا كانت ربحاً (طبيعة دائنة)
+            };
+
+            callback({ getSum, getRetainedEarnings });
         });
     });
 }
 
-// ==========================================
-// 1. قائمة الدخل (Income Statement)
-// ==========================================
-function generateIncomeStatement() {
-    renderHeader("قائمة الدخل الشامل", `عن السنة المنتهية في ${AppConfig.fiscalYear.end}`);
-    
-    calculateBalances((accounts, raw, getTotal, getByCode, repData) => {
-        let html = startTable(["البيان", "إيضاح", "السنة الحالية", "السنة السابقة", "تغير %"]);
-
-        // الإيرادات (4) - دائنة (سالبة) نضرب في -1
-        const revTotal = getByCode('4') * -1;
-        html += renderRow("الإيرادات", revTotal, true, 0, 'inc_rev', repData);
-
-        // التفاصيل
-        const revRoot = accounts.find(a => a.code === '4');
-        if (revRoot) {
-            accounts.filter(a => a.parentId === revRoot.id).forEach(acc => {
-                const val = getTotal(acc.id) * -1;
-                if (val !== 0) html += renderRow(acc.name, val, false, 1, acc.id, repData);
-            });
-        }
-
-        // تكلفة المبيعات (51)
-        const costTotal = getByCode('51');
-        html += renderRow("تكلفة المبيعات", costTotal * -1, false, 0, 'inc_cost', repData);
-
-        const grossProfit = revTotal - costTotal;
-        html += renderTotalRow("مجمل الربح", grossProfit, false, 'inc_gross', repData);
-
-        // المصاريف (52)
-        const expTotal = getByCode('52');
-        html += renderRow("المصاريف التشغيلية", expTotal * -1, false, 0, 'inc_exp', repData);
-
-        // تفاصيل المصاريف
-        const expRoot = accounts.find(a => a.code === '52');
-        if (expRoot) {
-            accounts.filter(a => a.parentId === expRoot.id).forEach(acc => {
-                const val = getTotal(acc.id);
-                if (val !== 0) html += renderRow(acc.name, val * -1, false, 1, acc.id, repData);
-            });
-        }
-
-        const netIncome = grossProfit - expTotal;
-        window.currentNetIncome = netIncome; // حفظ للاستخدام العام
-
-        html += renderTotalRow("صافي الربح للسنة", netIncome, true, 'inc_net', repData);
-        html += endTable();
-        document.getElementById('rep-content').innerHTML = html;
-    });
-}
-
-// ==========================================
-// 2. قائمة المركز المالي (Balance Sheet)
-// ==========================================
+// ============================================================
+// 2. قائمة المركز المالي (الميزانية)
+// ============================================================
 function generateBalanceSheet() {
-    renderHeader("قائمة المركز المالي", `كما في ${AppConfig.fiscalYear.end}`);
-    
-    calculateBalances((accounts, raw, getTotal, getByCode, repData) => {
-        let html = startTable(["البيان", "إيضاح", "السنة الحالية", "السنة السابقة", "تغير %"]);
+    calculateFinancialData(({ getSum, getRetainedEarnings }) => {
+        const curYr = AppConfig.fiscalYear.end.split('-')[0];
+        const prevYr = Number(curYr) - 1;
+
+        // دالة مساعدة لجلب القيمتين (حالي وسابق)
+        const getPair = (code) => {
+            return {
+                curr: getSum(code, 'current'),
+                prev: getSum(code, 'prev')
+            };
+        };
 
         // --- الأصول ---
-        html += sectionHeader("الأصول");
+        const nonCurrentAss = getPair('12');
+        const inventory = getPair('113');
+        const receivables = getPair('114');
+        const cash = getPair('11'); // كل المتداولة، سنطرح منها المخزون والمدينين للعرض
+        // (للتبسيط سنأخذ المجموعات الرئيسية)
+        const currentAssetsTotal = getPair('11');
         
-        // المتداولة
-        const curAssTotal = getByCode('11');
-        const curAssRoot = accounts.find(a => a.code === '11');
-        if (curAssRoot) {
-            accounts.filter(a => a.parentId === curAssRoot.id).forEach(acc => {
-                html += renderRow(acc.name, getTotal(acc.id), false, 1, acc.id, repData);
-            });
-        }
-        html += renderTotalRow("إجمالي الأصول المتداولة", curAssTotal, false, 'bs_cur_ass', repData);
+        // تفكيك النقدية (النقدية = إجمالي المتداولة - مخزون - مدينون - عهد)
+        const cashOnly = {
+            curr: currentAssetsTotal.curr - inventory.curr - receivables.curr,
+            prev: currentAssetsTotal.prev - inventory.prev - receivables.prev
+        };
 
-        // غير المتداولة
-        const fixAssTotal = getByCode('12');
-        const fixAssRoot = accounts.find(a => a.code === '12');
-        if (fixAssRoot) {
-            accounts.filter(a => a.parentId === fixAssRoot.id).forEach(acc => {
-                html += renderRow(acc.name, getTotal(acc.id), false, 1, acc.id, repData);
-            });
-        }
-        html += renderTotalRow("إجمالي الأصول غير المتداولة", fixAssTotal, false, 'bs_fix_ass', repData);
-
-        const totalAssets = curAssTotal + fixAssTotal;
-        html += renderTotalRow("إجمالي الأصول", totalAssets, true, 'bs_tot_ass', repData);
+        const totalAssets = {
+            curr: getSum('1', 'current'),
+            prev: getSum('1', 'prev')
+        };
 
         // --- الخصوم وحقوق الملكية ---
-        html += sectionHeader("الخصوم وحقوق الملكية");
-
-        // الخصوم
-        const liabTotal = getByCode('2') * -1;
-        const liabRoot = accounts.find(a => a.code === '2');
-        if (liabRoot) {
-            accounts.filter(a => a.parentId === liabRoot.id).forEach(acc => {
-                 // عرض أبناء الخصوم
-                 const val = getTotal(acc.id) * -1;
-                 html += renderRow(acc.name, val, false, 1, acc.id, repData);
-            });
-        }
-        html += renderTotalRow("إجمالي الخصوم", liabTotal, false, 'bs_tot_liab', repData);
-
-        // حقوق الملكية
-        // نحتاج صافي الربح من القائمة السابقة
-        const netIncome = window.currentNetIncome || (getByCode('4') * -1 - getByCode('5'));
+        const capital = getPair('31');
+        const reserves = getPair('32');
         
-        // رأس المال والأرباح المبقاة
-        const equityRoot = accounts.find(a => a.code === '3');
-        let equityTotalStored = equityRoot ? getTotal(equityRoot.id) * -1 : 0;
+        // الأرباح المبقاة (المحسوبة)
+        const retained = {
+            curr: getRetainedEarnings('current'),
+            prev: getRetainedEarnings('prev')
+        };
         
-        if (equityRoot) {
-             accounts.filter(a => a.parentId === equityRoot.id).forEach(acc => {
-                 const val = getTotal(acc.id) * -1;
-                 html += renderRow(acc.name, val, false, 1, acc.id, repData);
-            });
-        }
-        
-        // إضافة سطر صافي ربح العام
-        html += renderRow("أرباح العام الحالي (من قائمة الدخل)", netIncome, false, 1, 'equity_net_inc', repData);
+        // صافي ربح الفترة الحالية (يظهر في حقوق الملكية للسنة الحالية فقط)
+        const netProfitCurr = (getSum('4', 'current') + getSum('5', 'current')); 
+        const netProfitPrev = 0; // ربح السنة الماضية تم ترحيله للأرباح المبقاة
 
-        const totalEquity = equityTotalStored + netIncome;
-        html += renderTotalRow("إجمالي حقوق الملكية", totalEquity, false, 'bs_tot_eq', repData);
+        const totalEquity = {
+            curr: capital.curr + reserves.curr + retained.curr + netProfitCurr,
+            prev: capital.prev + reserves.prev + retained.prev + netProfitPrev
+        };
 
-        const totalLiabEq = liabTotal + totalEquity;
-        html += renderTotalRow("إجمالي الخصوم وحقوق الملكية", totalLiabEq, true, 'bs_final', repData);
+        const nonCurrentLiab = getPair('22');
+        const currentLiab = getPair('21');
+        const zakat = getPair('212'); // لفصلها إذا أردت
         
-        if (Math.abs(totalAssets - totalLiabEq) > 1) {
-            html += `<div style="color:red;text-align:center;font-weight:bold;margin-top:5px;">⚠️ غير متزنة (الفرق: ${formatMoney(totalAssets - totalLiabEq)})</div>`;
-        }
+        const totalLiab = {
+            curr: nonCurrentLiab.curr + currentLiab.curr,
+            prev: nonCurrentLiab.prev + currentLiab.prev
+        };
 
-        html += endTable();
-        document.getElementById('rep-content').innerHTML = html;
-    });
-}
-
-// ==========================================
-// 3. قائمة التغير في حقوق الملكية (New)
-// ==========================================
-function generateEquityStatement() {
-    renderHeader("قائمة التغير في حقوق الملكية", `للسنة المنتهية في ${AppConfig.fiscalYear.end}`);
-    
-    calculateBalances((accounts, raw, getTotal, getByCode, repData) => {
-        let html = startTable(["البيان", "رأس المال", "احتياطيات", "أرباح مبقاة", "الإجمالي"]);
-
-        // البيانات
-        const capital = getByCode('31') * -1; // رأس المال
-        const reserves = getByCode('32') * -1; // احتياطيات
-        const netIncome = window.currentNetIncome || (getByCode('4') * -1 - getByCode('5'));
-        
-        // أرصدة بداية المدة (تخمينية أو مدخلة يدوياً - هنا سنعتبرها الرصيد الحالي ناقص حركات العام)
-        // للتبسيط في هذا النظام: سنعرض الأرصدة الحالية كأرصدة نهاية مدة
-        
-        // سطر 1: رصيد بداية العام (مفترض أنه صفر + حركات سابقة، هنا سنستخدم أسلوب عرض مبسط)
-        // سنعرض الحركة خلال العام
-        
-        const rowStyle = "border-bottom:1px solid #eee;";
+        // بناء الجدول
+        let html = renderReportHeader("قائمة المركز المالي", `كما في 31 ديسمبر ${curYr}`);
         
         html += `
-            <tr style="${rowStyle}">
-                <td>رصيد بداية العام (تقديري)</td>
-                <td class="num-col">-</td>
-                <td class="num-col">-</td>
-                <td class="num-col">-</td>
-                <td class="num-col">-</td>
-            </tr>
-            <tr style="${rowStyle}">
-                <td>الزيادة في رأس المال</td>
-                <td class="num-col">${formatMoney(capital)}</td>
-                <td class="num-col">-</td>
-                <td class="num-col">-</td>
-                <td class="num-col">${formatMoney(capital)}</td>
-            </tr>
-            <tr style="${rowStyle}">
-                <td>صافي ربح العام</td>
-                <td class="num-col">-</td>
-                <td class="num-col">-</td>
-                <td class="num-col">${formatMoney(netIncome)}</td>
-                <td class="num-col">${formatMoney(netIncome)}</td>
-            </tr>
-            <tr style="${rowStyle}">
-                <td>المحول للاحتياطيات</td>
-                <td class="num-col">-</td>
-                <td class="num-col">${formatMoney(reserves)}</td>
-                <td class="num-col">(${formatMoney(reserves)})</td>
-                <td class="num-col">-</td>
-            </tr>
-            <tr style="font-weight:bold; background:#f9f9f9; border-top:2px solid #333;">
-                <td>رصيد نهاية العام</td>
-                <td class="num-col">${formatMoney(capital)}</td>
-                <td class="num-col">${formatMoney(reserves)}</td>
-                <td class="num-col">${formatMoney(netIncome - reserves)}</td> <td class="num-col">${formatMoney(capital + netIncome)}</td>
-            </tr>
+        <table class="fin-statement-table">
+            <thead>
+                <tr>
+                    <th width="35%">البيان</th>
+                    <th width="5%">إيضاح</th>
+                    <th width="20%">${curYr}</th>
+                    <th width="20%">${prevYr}</th>
+                    <th width="10%">التغير</th> </tr>
+            </thead>
+            <tbody>
         `;
 
-        html += endTable();
-        html += `<div class="audit-note">* تم إعداد هذه القائمة بناءً على الأرصدة الحالية للنظام.</div>`;
-        document.getElementById('rep-content').innerHTML = html;
+        html += renderSectionHeader("الأصول");
+        html += renderSectionHeader("الأصول غير المتداولة", true);
+        html += renderRow("الممتلكات والآلات والمعدات", nonCurrentAss.curr, nonCurrentAss.prev);
+        html += renderTotalRow("إجمالي الأصول غير المتداولة", nonCurrentAss.curr, nonCurrentAss.prev);
+
+        html += renderSectionHeader("الأصول المتداولة", true);
+        html += renderRow("المخزون", inventory.curr, inventory.prev);
+        html += renderRow("المدينون التجاريون", receivables.curr, receivables.prev);
+        html += renderRow("النقدية وما في حكمها", cashOnly.curr, cashOnly.prev);
+        html += renderTotalRow("إجمالي الأصول المتداولة", currentAssetsTotal.curr, currentAssetsTotal.prev);
+
+        html += renderGrandTotal("إجمالي الأصول", totalAssets.curr, totalAssets.prev);
+
+        html += renderSectionHeader("حقوق الملكية والالتزامات");
+        html += renderSectionHeader("حقوق الملكية", true);
+        html += renderRow("رأس المال", capital.curr * -1, capital.prev * -1);
+        html += renderRow("الاحتياطي النظامي", reserves.curr * -1, reserves.prev * -1);
+        html += renderRow("الأرباح المبقاة", retained.curr * -1, retained.prev * -1);
+        html += renderRow("صافي ربح السنة", netProfitCurr * -1, 0); // في سنة المقارنة يظهر ضمن الأرباح المبقاة
+        html += renderTotalRow("إجمالي حقوق الملكية", totalEquity.curr * -1, totalEquity.prev * -1);
+
+        html += renderSectionHeader("الالتزامات", true);
+        html += renderRow("الالتزامات غير المتداولة (نهاية الخدمة)", nonCurrentLiab.curr * -1, nonCurrentLiab.prev * -1);
+        html += renderRow("الالتزامات المتداولة", currentLiab.curr * -1, currentLiab.prev * -1);
+        html += renderTotalRow("إجمالي الالتزامات", totalLiab.curr * -1, totalLiab.prev * -1);
+
+        html += renderGrandTotal("إجمالي الحقوق والالتزامات", (totalEquity.curr + totalLiab.curr) * -1, (totalEquity.prev + totalLiab.prev) * -1);
+
+        html += `</tbody></table>`;
+        html += renderFooter();
+
+        document.getElementById('report-paper').innerHTML = html;
     });
 }
 
-// ==========================================
-// 4. قائمة التدفقات النقدية (Indirect Method)
-// ==========================================
-function generateCashFlow() {
-    renderHeader("قائمة التدفقات النقدية (تقديرية)", `للسنة المنتهية في ${AppConfig.fiscalYear.end}`);
-    
-    calculateBalances((accounts, raw, getTotal, getByCode, repData) => {
-        let html = startTable(["البيان", "المبلغ الجزئي", "الإجمالي"]);
+// ============================================================
+// 3. قائمة الربح أو الخسارة (الدخل)
+// ============================================================
+function generateIncomeStatement() {
+    calculateFinancialData(({ getSum }) => {
+        const curYr = AppConfig.fiscalYear.end.split('-')[0];
+        const prevYr = Number(curYr) - 1;
 
-        const netIncome = window.currentNetIncome || (getByCode('4') * -1 - getByCode('5'));
+        const getPair = (code) => {
+            return {
+                curr: getSum(code, 'current'),
+                prev: getSum(code, 'prev')
+            };
+        };
 
-        // 1. الأنشطة التشغيلية
-        html += sectionHeader("التدفقات من الأنشطة التشغيلية");
-        html += renderSimpleRow("صافي ربح العام", netIncome, true);
+        const revenue = getPair('41');
+        const cost = getPair('51');
         
-        // تغيرات رأس المال العامل (يفترض مقارنة بالسنة السابقة، هنا نستخدم الرصيد الحالي كتغير مطلق عن الصفر)
-        // الزيادة في الأصول المتداولة (غير النقدية) = تدفق خارج (-)
-        const inventory = getByCode('113'); // مخزون
-        const receivables = getByCode('114'); // عملاء
-        const payables = getByCode('211') * -1; // موردين (دائن)
+        const grossProfit = {
+            curr: (revenue.curr * -1) - cost.curr,
+            prev: (revenue.prev * -1) - cost.prev
+        };
 
-        html += renderSimpleRow("التغير في المخزون (زيادة)", inventory * -1);
-        html += renderSimpleRow("التغير في العملاء (زيادة)", receivables * -1);
-        html += renderSimpleRow("التغير في الموردين (زيادة)", payables); // زيادة الخصوم = تدفق داخل
+        const selling = getPair('52');
+        const admin = getPair('53');
+        const otherExp = {
+            curr: getSum('5', 'current') - cost.curr - selling.curr - admin.curr,
+            prev: getSum('5', 'prev') - cost.prev - selling.prev - admin.prev
+        };
 
-        const netOperating = netIncome - inventory - receivables + payables;
-        html += renderTotalRowSimple("صافي النقد من الأنشطة التشغيلية", netOperating);
+        const netProfit = {
+            curr: grossProfit.curr - selling.curr - admin.curr - otherExp.curr,
+            prev: grossProfit.prev - selling.prev - admin.prev - otherExp.prev
+        };
 
-        // 2. الأنشطة الاستثمارية
-        html += sectionHeader("التدفقات من الأنشطة الاستثمارية");
-        const fixedAssets = getByCode('12'); // أصول ثابتة (شراء = سالب)
-        html += renderSimpleRow("شراء أصول ثابتة", fixedAssets * -1);
-        html += renderTotalRowSimple("صافي النقد من الأنشطة الاستثمارية", fixedAssets * -1);
-
-        // 3. الأنشطة التمويلية
-        html += sectionHeader("التدفقات من الأنشطة التمويلية");
-        const capital = getByCode('31') * -1;
-        html += renderSimpleRow("زيادة رأس المال", capital);
-        html += renderTotalRowSimple("صافي النقد من الأنشطة التمويلية", capital);
-
-        // الخلاصة
-        const netCashChange = netOperating - fixedAssets + capital;
-        html += renderTotalRowSimple("صافي التغير في النقد وشبه النقد", netCashChange, true);
+        let html = renderReportHeader("قائمة الربح أو الخسارة", `للسنة المنتهية في 31 ديسمبر ${curYr}`);
         
-        const cashBalance = getByCode('111') + getByCode('112');
-        html += renderTotalRowSimple("رصيد النقدية في نهاية الفترة (للمطابقة)", cashBalance, true);
+        html += `
+        <table class="fin-statement-table">
+            <thead>
+                <tr>
+                    <th width="35%">البيان</th>
+                    <th width="5%">إيضاح</th>
+                    <th width="20%">${curYr}</th>
+                    <th width="20%">${prevYr}</th>
+                    <th width="10%">التغير</th>
+                </tr>
+            </thead>
+            <tbody>
+        `;
 
-        if (Math.abs(netCashChange - cashBalance) > 1) {
-             html += `<div style="color:red; font-size:10px; text-align:center;">* ملاحظة: الفرق يعود لأرصدة افتتاحية غير مدخلة أو حركات غير مصنفة بدقة.</div>`;
+        html += renderRow("الإيرادات", revenue.curr * -1, revenue.prev * -1);
+        html += renderRow("تكلفة الإيرادات", cost.curr * -1, cost.prev * -1);
+        html += renderTotalRow("مجمل الربح", grossProfit.curr, grossProfit.prev);
+
+        html += renderRow("مصاريف البيع والتسويق", selling.curr * -1, selling.prev * -1);
+        html += renderRow("المصاريف العمومية والإدارية", admin.curr * -1, admin.prev * -1);
+        if(otherExp.curr !== 0 || otherExp.prev !== 0) {
+            html += renderRow("مصاريف أخرى", otherExp.curr * -1, otherExp.prev * -1);
         }
 
-        html += endTable();
-        document.getElementById('rep-content').innerHTML = html;
+        html += renderGrandTotal("صافي ربح السنة", netProfit.curr, netProfit.prev);
+
+        html += `</tbody></table>`;
+        html += renderFooter();
+
+        document.getElementById('report-paper').innerHTML = html;
     });
 }
 
-// ==========================================
-// دوال الرسم المساعدة (Helpers)
-// ==========================================
+// ============================================================
+// 4. أدوات العرض (Rendering Tools)
+// ============================================================
 
-function renderHeader(title, subtitle) {
-    const area = document.getElementById('report-display-area');
-    area.innerHTML = `
-        <div class="sheet-header">
-            <h4>${title}</h4>
-            <span>${subtitle}</span>
-            <div id="rep-content"></div>
+function renderRow(label, currVal, prevVal) {
+    const format = (n) => {
+        if (n === 0 || n == null) return "-";
+        const abs = Math.abs(n).toLocaleString('en-US', {minimumFractionDigits: 0});
+        return n < 0 ? `(${abs})` : abs;
+    };
+
+    // حساب نسبة التغير
+    let pctHtml = '<span class="dash">-</span>';
+    if (prevVal !== 0 && currVal !== 0) {
+        const diff = currVal - prevVal;
+        const pct = (diff / Math.abs(prevVal)) * 100;
+        const color = pct > 0 ? 'green' : (pct < 0 ? 'red' : 'gray');
+        const arrow = pct > 0 ? '▲' : (pct < 0 ? '▼' : '');
+        pctHtml = `<span style="color:${color}; font-size:9px;">${arrow} ${Math.abs(pct).toFixed(0)}%</span>`;
+    } else if (prevVal === 0 && currVal !== 0) {
+         pctHtml = `<span style="color:green; font-size:9px;">جديد</span>`;
+    }
+
+    return `
+    <tr>
+        <td class="row-label">${label}</td>
+        <td class="center edit-cell" contenteditable="true"></td>
+        <td class="row-num">${format(currVal)}</td>
+        <td class="row-num text-muted">${format(prevVal)}</td>
+        <td class="center">${pctHtml}</td>
+    </tr>
+    `;
+}
+
+function renderTotalRow(label, currVal, prevVal) {
+    const format = (n) => Math.abs(n).toLocaleString('en-US', {minimumFractionDigits: 0});
+    const dispCurr = currVal < 0 ? `(${format(currVal)})` : format(currVal);
+    const dispPrev = prevVal < 0 ? `(${format(prevVal)})` : (prevVal === 0 ? '-' : format(prevVal));
+    
+    return `
+    <tr class="sub-total-row">
+        <td>${label}</td>
+        <td></td>
+        <td class="row-num">${dispCurr}</td>
+        <td class="row-num">${dispPrev}</td>
+        <td></td>
+    </tr>
+    `;
+}
+
+function renderGrandTotal(label, currVal, prevVal) {
+    const format = (n) => Math.abs(n).toLocaleString('en-US', {minimumFractionDigits: 0});
+    const dispCurr = currVal < 0 ? `(${format(currVal)})` : format(currVal);
+    const dispPrev = prevVal < 0 ? `(${format(prevVal)})` : (prevVal === 0 ? '-' : format(prevVal));
+    
+    return `
+    <tr class="grand-total-row">
+        <td>${label}</td>
+        <td></td>
+        <td class="row-num">${dispCurr}</td>
+        <td class="row-num">${dispPrev}</td>
+        <td></td>
+    </tr>
+    `;
+}
+
+function renderSectionHeader(title, isSub = false) {
+    return `<tr><td colspan="5" class="${isSub ? 'sub-header' : 'main-header'}">${title}</td></tr>`;
+}
+
+function renderReportHeader(title, subTitle) {
+    return `
+        <div class="print-header">
+            <div class="report-title">
+                <h1 style="margin:0; font-size:16px;">شركة الآفاق التجارية</h1>
+                <h2 style="margin:4px; font-size:18px;">${title}</h2>
+                <p style="margin:2px; font-size:11px;">${subTitle}</p>
+            </div>
+            <div style="font-size:30px;">🏢</div>
         </div>
     `;
 }
 
-function startTable(headers) {
-    let ths = headers.map(h => `<th>${h}</th>`).join('');
-    return `<table class="fin-table"><thead><tr>${ths}</tr></thead><tbody>`;
-}
-
-function endTable() {
-    return `</tbody></table><div class="audit-note">* تم إصدار التقرير آلياً.</div>`;
-}
-
-function sectionHeader(title) {
-    return `<tr class="section-head"><td colspan="5">${title}</td></tr>`;
-}
-
-// دالة رسم الصف (مع حساب نسبة التغير والايضاحات)
-function renderRow(name, amount, isBold, indentLevel, uniqueId, repData) {
-    const style = isBold ? 'font-weight:bold;' : '';
-    const indent = indentLevel * 10;
-    
-    // مفاتيح البيانات المحفوظة
-    const noteKey = `ref_${uniqueId}`;
-    const prevKey = `prev_${uniqueId}`;
-
-    const noteVal = repData && repData[noteKey] ? repData[noteKey] : '';
-    const prevValRaw = repData && repData[prevKey] ? repData[prevKey] : 0;
-    
-    const prevVal = unformatMoney(prevValRaw); // تحويل النص لرقم للحساب
-    
-    // حساب نسبة التغير
-    let pctChange = '-';
-    if (prevVal !== 0) {
-        const diff = amount - prevVal;
-        const pct = (diff / Math.abs(prevVal)) * 100;
-        pctChange = pct.toFixed(1) + '%';
-    } else if (amount !== 0 && prevVal === 0) {
-        pctChange = '100%'; // جديد
-    }
-
-    // تحديد لون النسبة
-    const pctColor = pctChange.includes('-') ? 'red' : 'green';
-
+function renderFooter() {
     return `
-        <tr style="${style}">
-            <td style="padding-right:${indent}px">${name}</td>
-            
-            <td class="input-cell" width="50px">
-                <input type="text" id="${noteKey}" value="${noteVal}" 
-                       class="sheet-input center" placeholder="#"
-                       onblur="autoSaveCell(this)">
-            </td>
-            
-            <td class="num-col">${amount === 0 ? '-' : formatMoney(amount)}</td>
-            
-            <td class="input-cell">
-                <input type="text" id="${prevKey}" value="${prevValRaw || ''}" 
-                       class="sheet-input prev-input" placeholder="0.00"
-                       onblur="autoSaveCell(this); refreshPct(this);"> 
-            </td>
-            
-            <td class="num-col" style="color:${pctColor}; font-size:9px;">${pctChange}</td>
-        </tr>
+        <div class="print-footer">
+            <div class="sign-box"><p>المحاسب</p></div>
+            <div class="sign-box"><p>المدير المالي</p></div>
+            <div class="sign-box"><p>المدير العام</p></div>
+        </div>
     `;
 }
 
-function renderTotalRow(name, amount, isGrand, uniqueId, repData) {
-    const bg = isGrand ? '#ecf0f1' : '#f9f9f9';
-    const weight = isGrand ? 'bold' : 'normal';
-    
-    // حتى الإجماليات نحتاج لها مقارنة
-    const prevKey = `prev_${uniqueId}`;
-    const prevValRaw = repData && repData[prevKey] ? repData[prevKey] : 0;
-    const prevVal = unformatMoney(prevValRaw);
-
-    let pctChange = '-';
-    if (prevVal !== 0) {
-        const pct = ((amount - prevVal) / Math.abs(prevVal)) * 100;
-        pctChange = pct.toFixed(1) + '%';
-    }
-
-    return `
-        <tr style="background:${bg}; font-weight:${weight}; border-top:1px solid #ccc;">
-            <td>${name}</td>
-            <td></td>
-            <td class="num-col">${formatMoney(amount)}</td>
-            
-            <td class="input-cell">
-                <input type="text" id="${prevKey}" value="${prevValRaw || ''}" 
-                       class="sheet-input prev-input" placeholder="0.00"
-                       style="font-weight:bold"
-                       onblur="autoSaveCell(this)">
-            </td>
-             <td class="num-col" style="font-size:9px;">${pctChange}</td>
-        </tr>
-    `;
-}
-
-// دوال بسيطة للتدفقات النقدية
-function renderSimpleRow(name, amount) {
-    return `<tr><td>${name}</td><td class="num-col">${formatMoney(amount)}</td><td></td></tr>`;
-}
-function renderTotalRowSimple(name, amount, isGrand=false) {
-    const style = isGrand ? 'font-weight:bold;border-top:2px solid #333;background:#eee;' : 'font-weight:bold;border-top:1px solid #ccc;';
-    return `<tr style="${style}"><td>${name}</td><td></td><td class="num-col">${formatMoney(amount)}</td></tr>`;
-}
-
-// الحفظ التلقائي
-function autoSaveCell(el) {
-    dbSaveReportCell(el.id, el.value);
-    document.getElementById('save-indicator').style.display = 'block';
-    setTimeout(() => document.getElementById('save-indicator').style.display = 'none', 1000);
-}
-
-// تحديث الصفحة لحساب النسبة فوراً بعد إدخال رقم المقارنة
-function refreshPct(el) {
-    // يمكن إعادة استدعاء دالة التقرير الحالية، لكن للسهولة سنطلب من المستخدم التحديث
-    // أو نعتمد على الحفظ ثم إعادة الضغط على الزر.
-    // الأفضل: لا نفعل شيئاً مزعجاً، النسبة ستتحدث عند إعادة فتح التقرير.
-}
-
+// ============================================================
+// 5. التصميم (CSS)
+// ============================================================
 function renderReportStyles() {
-    if (document.getElementById('rep-css')) return;
+    if (document.getElementById('fin-pro-css')) return;
     const s = document.createElement('style');
-    s.id = 'rep-css';
+    s.id = 'fin-pro-css';
     s.innerHTML = `
-        .report-controls { display: flex; gap: 5px; margin-bottom: 10px; justify-content: center; flex-wrap: wrap; }
-        .rep-btn { background: #2c3e50; color: white; border: none; padding: 8px 10px; border-radius: 4px; font-size: 10px; cursor: pointer; flex: 1; min-width: 70px; }
-        .rep-btn:hover { background: #34495e; }
-        
-        .print-control { text-align: center; margin-bottom: 15px; }
-        .print-btn { background: #fff; border: 1px solid #2c3e50; color: #2c3e50; width: auto; display: inline-flex; padding: 5px 20px; }
-
-        .report-paper { background: white; padding: 15px; border: 1px solid #ddd; min-height: 500px; font-family: 'Times New Roman', serif; }
-        .sheet-header { text-align: center; margin-bottom: 20px; border-bottom: 3px double #000; padding-bottom: 10px; }
-        .sheet-header h4 { font-size: 16px; margin: 0 0 5px 0; color: #000; }
-        .sheet-header span { font-size: 11px; color: #555; }
-
-        .fin-table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 10px; }
-        .fin-table th { border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 5px; background: #f0f0f0; font-weight: bold; }
-        .fin-table td { border-bottom: 1px dotted #ccc; padding: 4px; vertical-align: middle; }
-        
-        .num-col { text-align: left; direction: ltr; font-family: 'Courier New', monospace; font-weight: 500; }
-        .input-cell { padding: 0 !important; }
-        .sheet-input { width: 100%; border: none; background: transparent; font-family: inherit; font-size: 10px; padding: 4px; outline: none; text-align: center; }
-        .sheet-input:focus { background: #fffbe6; }
-        .sheet-input.center { text-align: center; }
-        .sheet-input.prev-input { text-align: left; direction: ltr; color: #7f8c8d; }
-
-        .section-head { font-weight: bold; background: #fafafa; font-style: italic; }
-        .audit-note { margin-top: 20px; font-size: 9px; color: #999; text-align: center; border-top: 1px solid #eee; padding-top: 5px; }
-
-        /* الطباعة */
-        @media print {
-            body * { visibility: hidden; }
-            #report-display-area, #report-display-area * { visibility: visible; }
-            #report-display-area { position: absolute; left: 0; top: 0; width: 100%; border: none; padding: 0; }
-            .no-print { display: none !important; }
-            .sheet-input { border: none !important; background: transparent !important; } 
-            /* عند الطباعة، تظهر القيم المدخلة وكأنها نص عادي */
+        .a4-page {
+            background: white; width: 100%; max-width: 210mm; min-height: 297mm;
+            margin: 10px auto; padding: 10mm; box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            font-family: 'Times New Roman', serif;
         }
+        .fin-statement-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .fin-statement-table th { border-top: 2px solid #000; border-bottom: 2px solid #000; padding: 6px; background: #fff; text-align: center; }
+        .fin-statement-table td { padding: 5px; border-bottom: 1px dotted #ccc; vertical-align: middle; }
+        
+        .row-label { text-align: right; }
+        .row-num { text-align: left; direction: ltr; font-family: 'Courier New'; font-weight: bold; }
+        .center { text-align: center; }
+        .text-muted { color: #888; font-weight: normal; }
+        .dash { color: #ccc; }
+        
+        .main-header { font-weight: bold; font-size: 12px; padding-top: 15px; border-bottom: 1px solid #000; background:#f9f9f9; }
+        .sub-header { font-weight: bold; font-style: italic; padding-right: 15px; color: #444; padding-top:10px; }
+        
+        .sub-total-row td { border-top: 1px solid #000; font-weight: bold; background: #fdfdfd; }
+        .grand-total-row td { border-top: 2px solid #000; border-bottom: 3px double #000; font-weight: bold; font-size: 13px; background: #f4f4f4; }
+        
+        .print-header { display: flex; justify-content: space-between; border-bottom: 3px double #000; padding-bottom: 10px; margin-bottom: 20px; align-items: center; }
+        .print-footer { display: flex; justify-content: space-around; margin-top: 50px; }
+        .sign-box { text-align: center; width: 30%; border-top: 1px dashed #000; padding-top: 5px; margin-top:30px; }
+
+        /* Mobile */
+        @media screen and (max-width: 600px) {
+            .a4-page { zoom: 0.65; padding: 5mm; }
+        }
+        @media print {
+            .no-print { display: none !important; }
+            .a4-page { width: 100%; margin: 0; padding: 0; box-shadow: none; zoom:1; }
+            body { background: white; }
+        }
+        
+        /* Dashboard Controls */
+        .report-dashboard { background: #ecf0f1; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .dash-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .fiscal-badge { background: #2c3e50; color: white; padding: 2px 8px; border-radius: 4px; font-size: 10px; }
+        .rep-btn { background: white; border: 1px solid #ccc; padding: 8px 15px; border-radius: 4px; font-weight: bold; cursor: pointer; margin-left: 5px; }
+        .print-btn { background: #27ae60; color: white; border: none; padding: 8px 15px; border-radius: 4px; }
     `;
     document.head.appendChild(s);
 }
