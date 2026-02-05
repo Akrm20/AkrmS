@@ -5,8 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 
 
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="manifest" href="manifest.json">
+    
+    <meta name="theme-color" content="#2c3e50">
+    
+    <script src="xlsx.full.min.js"></script>
+    <script src="chart.js"></script>
 
     
     </head>
@@ -129,45 +133,84 @@
         <button class="tab-btn" onclick="showTab('tab4', this)">التقارير</button>
         <button class="tab-btn" onclick="showTab('tab5', this)">إعدادات</button>
     </div>
+    
+    <div id="sys-nav-link" style="position: fixed; top: 10px; left: 10px; z-index: 9999;">
+        <a href="https://akrm20.github.io/AkPos/" style="
+            background: #e67e22; 
+            color: white; 
+            text-decoration: none; 
+            padding: 5px 12px; 
+            border-radius: 20px; 
+            font-size: 10px; 
+            font-weight: bold; 
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        ">
+            🛒 نظام المبيعات
+        </a>
+    </div>
+        
 <script src="setting.js"></script>
 <script src="Db.js"></script>
 <script src="Tree.js"></script>
 <script src="Ju.js"></script>
 <script src="Fin.js"></script>
 <script src="Re.js"></script>
+<script src="Home.js"></script>
+<script src="Inj.js"></script>
+<script src="Rev.js"></script>
+<script src="Cash.js"></script>
+<script src="Gen.js"></script>
+<script src="Tri.js"></script>
+<script src="Bal.js"></script>
+
+
+
+
+
+
 
 <script>
+    
+    // تسجيل Service Worker ليعمل التطبيق أوفلاين
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('./sw.js')
+                .then((reg) => console.log('تم تسجيل Service Worker بنجاح', reg.scope))
+                .catch((err) => console.log('فشل تسجيل Service Worker', err));
+        });
+    }
+    
+    
+    
     // دالة التبديل بين التبويبات
-    function showTab(tabId, btn) {
-        // إزالة التفعيل من الكل
-        document.querySelectorAll('.tab-content').forEach(div => div.classList.remove('active'));
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        
-        // تفعيل المطلوب
-        const targetDiv = document.getElementById(tabId);
-        if (targetDiv) targetDiv.classList.add('active');
-        
-        if (btn) btn.classList.add('active');
-        else {
-            // محاولة تفعيل الزر برمجياً إذا لم يتم تمريره
-            const autoBtn = document.querySelector(`button[onclick*="'${tabId}'"]`);
-            if (autoBtn) autoBtn.classList.add('active');
-        }
-
-        // التوجيه المنطقي
-        if (tabId === 'tab1') {
-            if(typeof initHomeDashboard === 'function') initHomeDashboard();
-        }
-        if (tabId === 'tab4') {
-            if(typeof initFinancialReports === 'function') initFinancialReports();
-        }
-        if (tabId === 'tab5') {
-            if(typeof renderSettingsTab === 'function') renderSettingsTab();
-        }
+function showTab(tabId, btn) {
+    // 1. إخفاء الكل وإزالة التنشيط
+    document.querySelectorAll('.tab-content').forEach(div => div.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    
+    // 2. تفعيل التبويب والزر المختار
+    const targetDiv = document.getElementById(tabId);
+    if (targetDiv) targetDiv.classList.add('active');
+    
+    if (btn) {
+        btn.classList.add('active');
+    } else {
+        // تفعيل الزر تلقائياً إذا تم استدعاء الدالة برمجياً
+        const autoBtn = document.querySelector(`button[onclick*="'${tabId}'"]`);
+        if (autoBtn) autoBtn.classList.add('active');
     }
 
-    // --- ملاحظة: قمنا بحذف كود DOMContentLoaded من هنا ---
-    // وسننقل أمر التشغيل إلى داخل ملف Db.js لضمان أن القاعدة جاهزة
+    // 3. (الجزء المفقود سابقاً) تشغيل وظائف التبويب المحدد
+    if (tabId === 'tab1' && typeof initHomeDashboard === 'function') initHomeDashboard();
+    if (tabId === 'tab2' && typeof startSystem === 'function') startSystem(); // الدليل
+    if (tabId === 'tab3' && typeof initJournalFeature === 'function') initJournalFeature(); // <-- هذا هو السطر المفقود للقيود
+    if (tabId === 'tab4' && typeof initFinancialReports === 'function') initFinancialReports();
+    if (tabId === 'tab5' && typeof renderSettingsTab === 'function') renderSettingsTab();
+}
+
 </script>
 
 </body>
